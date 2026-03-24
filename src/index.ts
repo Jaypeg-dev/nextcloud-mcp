@@ -346,7 +346,8 @@ class NextcloudMCPServer {
 
       const task = this.parseVTODO(match[1]);
       if (!task) continue;
-
+      if (task.uid && task.uid.startsWith("deck-stack-")) continue;
+      
       task.listId = listId;
       task.listName = listName;
 
