@@ -8,12 +8,18 @@ import {
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import axios, { AxiosInstance } from "axios";
-import { parseISO, format } from "date-fns";
+import { format } from "date-fns";
 
 interface NextcloudConfig {
   url: string;
   username: string;
   password: string; // App password recommended
+}
+
+interface TaskList {
+  id: string;        // CalDAV path segment, e.g. "tasks" or "personal"
+  displayName: string;
+  url: string;       // Full CalDAV path
 }
 
 class NextcloudMCPServer {
@@ -26,7 +32,7 @@ class NextcloudMCPServer {
     this.server = new Server(
       {
         name: "nextcloud-mcp-server",
-        version: "1.0.0",
+        version: "1.1.0",
       },
       {
         capabilities: {
@@ -64,19 +70,17 @@ class NextcloudMCPServer {
   }
 
   private setupHandlers(): void {
-    // List available tools
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      return {
-        tools: this.getTools(),
-      };
+      return { tools: this.getTools() };
     });
 
-    // Handle tool calls
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
 
       try {
         switch (name) {
+          case "get_task_lists":
+            return await this.getTaskLists();
           case "get_tasks":
             return await this.getTasks(args as any);
           case "create_task":
@@ -100,12 +104,7 @@ class NextcloudMCPServer {
         }
       } catch (error: any) {
         return {
-          content: [
-            {
-              type: "text",
-              text: `Error: ${error.message}`,
-            },
-          ],
+          content: [{ type: "text", text: `Error: ${error.message}` }],
           isError: true,
         };
       }
@@ -114,23 +113,41 @@ class NextcloudMCPServer {
 
   private getTools(): Tool[] {
     return [
-      // Tasks tools
+      // ── Task list discovery ──────────────────────────────────────────────
+      {
+        name: "get_task_lists",
+        description:
+          "Discover all task lists (CalDAV calendars that support VTODO) available for this user. " +
+          "Returns each list's id (the CalDAV path segment) and display name. " +
+          "Use the id as the listId parameter when calling get_tasks or create_task.",
+        inputSchema: { type: "object", properties: {} },
+      },
+
+      // ── Tasks ────────────────────────────────────────────────────────────
       {
         name: "get_tasks",
         description:
-          "Retrieve tasks from Nextcloud. Can filter by status (completed/open) and limit results.",
+          "Retrieve tasks from Nextcloud. " +
+          "If listId is omitted all VTODO-capable lists are queried and results are tagged with their source list. " +
+          "Use get_task_lists first to see available list IDs.",
         inputSchema: {
           type: "object",
           properties: {
+            listId: {
+              type: "string",
+              description:
+                "CalDAV path segment of a specific list to query (e.g. 'tasks', 'personal'). " +
+                "Omit to query ALL lists.",
+            },
             status: {
               type: "string",
               enum: ["all", "open", "completed"],
-              description: "Filter tasks by status",
+              description: "Filter tasks by status (default: all)",
               default: "all",
             },
             limit: {
               type: "number",
-              description: "Maximum number of tasks to return",
+              description: "Maximum total number of tasks to return (default: 50)",
               default: 50,
             },
           },
@@ -142,21 +159,14 @@ class NextcloudMCPServer {
         inputSchema: {
           type: "object",
           properties: {
-            summary: {
+            summary: { type: "string", description: "Task title/summary" },
+            description: { type: "string", description: "Task description (optional)" },
+            due: { type: "string", description: "Due date in ISO format YYYY-MM-DD (optional)" },
+            priority: { type: "number", description: "Priority 1-9 where 1 is highest (optional)" },
+            listId: {
               type: "string",
-              description: "Task title/summary",
-            },
-            description: {
-              type: "string",
-              description: "Task description (optional)",
-            },
-            due: {
-              type: "string",
-              description: "Due date in ISO format (YYYY-MM-DD) (optional)",
-            },
-            priority: {
-              type: "number",
-              description: "Priority (1-9, where 1 is highest) (optional)",
+              description: "CalDAV path segment of the list to create the task in (default: 'tasks')",
+              default: "tasks",
             },
           },
           required: ["summary"],
@@ -168,14 +178,15 @@ class NextcloudMCPServer {
         inputSchema: {
           type: "object",
           properties: {
-            taskId: {
+            taskId: { type: "string", description: "Task UID" },
+            listId: {
               type: "string",
-              description: "Task ID/UID",
+              description:
+                "CalDAV path segment of the list the task lives in (default: 'tasks'). " +
+                "Required if the task is in a non-default list.",
+              default: "tasks",
             },
-            summary: {
-              type: "string",
-              description: "New task title/summary (optional)",
-            },
+            summary: { type: "string", description: "New task title/summary (optional)" },
             status: {
               type: "string",
               enum: ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"],
@@ -189,29 +200,23 @@ class NextcloudMCPServer {
           required: ["taskId"],
         },
       },
-      // Calendar tools
+
+      // ── Calendar ─────────────────────────────────────────────────────────
       {
         name: "get_calendar_events",
-        description:
-          "Retrieve calendar events from Nextcloud. Can specify date range.",
+        description: "Retrieve calendar events from Nextcloud. Can specify date range.",
         inputSchema: {
           type: "object",
           properties: {
             startDate: {
               type: "string",
-              description:
-                "Start date in ISO format (YYYY-MM-DD). Defaults to today.",
+              description: "Start date YYYY-MM-DD (defaults to today)",
             },
             endDate: {
               type: "string",
-              description:
-                "End date in ISO format (YYYY-MM-DD). Defaults to 30 days from start.",
+              description: "End date YYYY-MM-DD (defaults to 30 days from start)",
             },
-            limit: {
-              type: "number",
-              description: "Maximum number of events to return",
-              default: 50,
-            },
+            limit: { type: "number", description: "Max events to return", default: 50 },
           },
         },
       },
@@ -221,42 +226,24 @@ class NextcloudMCPServer {
         inputSchema: {
           type: "object",
           properties: {
-            summary: {
-              type: "string",
-              description: "Event title/summary",
-            },
-            description: {
-              type: "string",
-              description: "Event description (optional)",
-            },
-            startDateTime: {
-              type: "string",
-              description: "Start date/time in ISO format (YYYY-MM-DDTHH:mm:ss)",
-            },
-            endDateTime: {
-              type: "string",
-              description: "End date/time in ISO format (YYYY-MM-DDTHH:mm:ss)",
-            },
-            location: {
-              type: "string",
-              description: "Event location (optional)",
-            },
+            summary: { type: "string", description: "Event title" },
+            description: { type: "string", description: "Event description (optional)" },
+            startDateTime: { type: "string", description: "Start YYYY-MM-DDTHH:mm:ss" },
+            endDateTime: { type: "string", description: "End YYYY-MM-DDTHH:mm:ss" },
+            location: { type: "string", description: "Event location (optional)" },
           },
           required: ["summary", "startDateTime", "endDateTime"],
         },
       },
-      // Notes tools
+
+      // ── Notes ────────────────────────────────────────────────────────────
       {
         name: "get_notes",
         description: "Retrieve all notes from Nextcloud Notes app",
         inputSchema: {
           type: "object",
           properties: {
-            limit: {
-              type: "number",
-              description: "Maximum number of notes to return",
-              default: 50,
-            },
+            limit: { type: "number", description: "Max notes to return", default: 50 },
           },
         },
       },
@@ -266,18 +253,9 @@ class NextcloudMCPServer {
         inputSchema: {
           type: "object",
           properties: {
-            title: {
-              type: "string",
-              description: "Note title (first line)",
-            },
-            content: {
-              type: "string",
-              description: "Note content (markdown supported)",
-            },
-            category: {
-              type: "string",
-              description: "Note category/folder (optional)",
-            },
+            title: { type: "string", description: "Note title (first line)" },
+            content: { type: "string", description: "Note content (markdown supported)" },
+            category: { type: "string", description: "Note category/folder (optional)" },
           },
           required: ["content"],
         },
@@ -288,48 +266,158 @@ class NextcloudMCPServer {
         inputSchema: {
           type: "object",
           properties: {
-            noteId: {
-              type: "number",
-              description: "Note ID",
-            },
+            noteId: { type: "number", description: "Note ID" },
           },
           required: ["noteId"],
         },
       },
-      // Email tools
+
+      // ── Email ────────────────────────────────────────────────────────────
       {
         name: "get_emails",
-        description:
-          "Retrieve emails from Nextcloud Mail app. Returns recent emails from inbox.",
+        description: "Retrieve emails from Nextcloud Mail app. Returns recent emails from inbox.",
         inputSchema: {
           type: "object",
           properties: {
-            accountId: {
-              type: "number",
-              description: "Mail account ID (use 0 for default)",
-              default: 0,
-            },
-            limit: {
-              type: "number",
-              description: "Maximum number of emails to return",
-              default: 20,
-            },
+            accountId: { type: "number", description: "Mail account ID (default: 0)", default: 0 },
+            limit: { type: "number", description: "Max emails to return", default: 20 },
           },
         },
       },
     ];
   }
 
+  // ========== TASK LIST DISCOVERY ==========
+
+  /**
+   * PROPFIND on the calendars principal to find all calendars that
+   * advertise VTODO support in their supported-calendar-component-set.
+   */
+  private async discoverTaskLists(): Promise<TaskList[]> {
+    const principalPath = `/remote.php/dav/calendars/${this.config.username}/`;
+
+    const requestBody = `<?xml version="1.0" encoding="UTF-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/">
+  <d:prop>
+    <d:displayname />
+    <c:supported-calendar-component-set />
+  </d:prop>
+</d:propfind>`;
+
+    const response = await this.axiosInstance.request({
+      method: "PROPFIND",
+      url: principalPath,
+      data: requestBody,
+      headers: {
+        "Content-Type": "application/xml",
+        Depth: "1",
+      },
+    });
+
+    return this.parseTaskListsFromPropfind(response.data);
+  }
+
+  private parseTaskListsFromPropfind(xmlData: string): TaskList[] {
+    const lists: TaskList[] = [];
+
+    // Match each <d:response> block
+    const responseMatches = xmlData.matchAll(
+      /<d:response>([\s\S]*?)<\/d:response>/g
+    );
+
+    for (const match of responseMatches) {
+      const block = match[1];
+
+      // Only include if VTODO is in the supported components
+      if (!block.includes("VTODO")) continue;
+
+      // Extract the href (CalDAV path)
+      const hrefMatch = block.match(/<d:href>([^<]+)<\/d:href>/);
+      if (!hrefMatch) continue;
+      const href = hrefMatch[1].trim();
+
+      // Derive the path segment (list id) from the href
+      // href looks like: /remote.php/dav/calendars/username/listname/
+      const segments = href.replace(/\/$/, "").split("/");
+      const id = segments[segments.length - 1];
+
+      // Skip the principal collection itself
+      if (!id || id === this.config.username) continue;
+
+      // Extract display name
+      const nameMatch = block.match(/<d:displayname>([^<]*)<\/d:displayname>/);
+      const displayName = nameMatch ? nameMatch[1].trim() : id;
+
+      lists.push({ id, displayName, url: href });
+    }
+
+    return lists;
+  }
+
+  private async getTaskLists() {
+    try {
+      const lists = await this.discoverTaskLists();
+      return {
+        content: [{ type: "text", text: JSON.stringify(lists, null, 2) }],
+      };
+    } catch (error: any) {
+      throw new Error(`Failed to discover task lists: ${error.message}`);
+    }
+  }
+
   // ========== TASKS METHODS ==========
+
   private async getTasks(args: any) {
     const status = args.status || "all";
     const limit = args.limit || 50;
+    const listId: string | undefined = args.listId;
 
     try {
-      // CalDAV REPORT request to get tasks
-      const caldavPath = `/remote.php/dav/calendars/${this.config.username}/tasks/`;
+      let lists: TaskList[];
 
-      const requestBody = `<?xml version="1.0" encoding="UTF-8"?>
+      if (listId) {
+        // Query just the specified list
+        const path = `/remote.php/dav/calendars/${this.config.username}/${listId}/`;
+        lists = [{ id: listId, displayName: listId, url: path }];
+      } else {
+        // Auto-discover all VTODO-capable lists
+        lists = await this.discoverTaskLists();
+        if (lists.length === 0) {
+          // Fallback to the classic "tasks" calendar if discovery finds nothing
+          const path = `/remote.php/dav/calendars/${this.config.username}/tasks/`;
+          lists = [{ id: "tasks", displayName: "tasks", url: path }];
+        }
+      }
+
+      const allTasks: any[] = [];
+
+      for (const list of lists) {
+        if (allTasks.length >= limit) break;
+
+        try {
+          const remaining = limit - allTasks.length;
+          const tasks = await this.fetchTasksFromList(list, status, remaining);
+          allTasks.push(...tasks);
+        } catch (listError: any) {
+          // Log but don't abort — one broken list shouldn't kill the whole call
+          console.error(`[get_tasks] Skipping list "${list.id}": ${listError.message}`);
+        }
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(allTasks, null, 2) }],
+      };
+    } catch (error: any) {
+      throw new Error(`Failed to fetch tasks: ${error.message}`);
+    }
+  }
+
+  private async fetchTasksFromList(
+    list: TaskList,
+    status: string,
+    limit: number
+  ): Promise<any[]> {
+    const requestBody = `<?xml version="1.0" encoding="UTF-8"?>
 <c:calendar-query xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:d="DAV:">
   <d:prop>
     <d:getetag />
@@ -342,39 +430,28 @@ class NextcloudMCPServer {
   </c:filter>
 </c:calendar-query>`;
 
-      const response = await this.axiosInstance.request({
-        method: "REPORT",
-        url: caldavPath,
-        data: requestBody,
-        headers: {
-          "Content-Type": "application/xml",
-          Depth: "1",
-        },
-      });
+    const response = await this.axiosInstance.request({
+      method: "REPORT",
+      url: list.url,
+      data: requestBody,
+      headers: {
+        "Content-Type": "application/xml",
+        Depth: "1",
+      },
+    });
 
-      const tasks = this.parseTasksFromCalDAV(response.data, status, limit);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(tasks, null, 2),
-          },
-        ],
-      };
-    } catch (error: any) {
-      throw new Error(`Failed to fetch tasks: ${error.message}`);
-    }
+    return this.parseTasksFromCalDAV(response.data, status, limit, list.id, list.displayName);
   }
 
   private parseTasksFromCalDAV(
     xmlData: string,
     status: string,
-    limit: number
+    limit: number,
+    listId: string,
+    listName: string
   ): any[] {
     const tasks: any[] = [];
 
-    // Basic XML parsing for VTODO components
     const todoMatches = xmlData.matchAll(
       /<c:calendar-data[^>]*>([\s\S]*?)<\/c:calendar-data>/g
     );
@@ -382,23 +459,19 @@ class NextcloudMCPServer {
     for (const match of todoMatches) {
       if (tasks.length >= limit) break;
 
-      const todoData = match[1];
-      const task = this.parseVTODO(todoData);
+      const task = this.parseVTODO(match[1]);
+      if (!task) continue;
 
-      if (task) {
-        if (status === "all") {
-          tasks.push(task);
-        } else if (
-          status === "completed" &&
-          task.status === "COMPLETED"
-        ) {
-          tasks.push(task);
-        } else if (
-          status === "open" &&
-          task.status !== "COMPLETED"
-        ) {
-          tasks.push(task);
-        }
+      // Tag with source list
+      task.listId = listId;
+      task.listName = listName;
+
+      if (status === "all") {
+        tasks.push(task);
+      } else if (status === "completed" && task.status === "COMPLETED") {
+        tasks.push(task);
+      } else if (status === "open" && task.status !== "COMPLETED") {
+        tasks.push(task);
       }
     }
 
@@ -420,9 +493,7 @@ class NextcloudMCPServer {
         task.percentComplete = parseInt(line.substring(17).trim());
       } else if (line.startsWith("DUE")) {
         const dueMatch = line.match(/DUE[^:]*:(\d{8}T?\d{6}Z?)/);
-        if (dueMatch) {
-          task.due = this.parseICalDate(dueMatch[1]);
-        }
+        if (dueMatch) task.due = this.parseICalDate(dueMatch[1]);
       } else if (line.startsWith("PRIORITY:")) {
         task.priority = parseInt(line.substring(9).trim());
       } else if (line.startsWith("DESCRIPTION:")) {
@@ -435,6 +506,7 @@ class NextcloudMCPServer {
 
   private async createTask(args: any) {
     const { summary, description, due, priority } = args;
+    const listId: string = args.listId || "tasks";
     const uid = this.generateUID();
 
     let vtodo = `BEGIN:VCALENDAR
@@ -446,35 +518,20 @@ SUMMARY:${summary}
 STATUS:NEEDS-ACTION
 CREATED:${this.formatICalDateTime(new Date())}`;
 
-    if (description) {
-      vtodo += `\nDESCRIPTION:${description}`;
-    }
-    if (due) {
-      vtodo += `\nDUE:${this.formatICalDate(new Date(due))}`;
-    }
-    if (priority) {
-      vtodo += `\nPRIORITY:${priority}`;
-    }
+    if (description) vtodo += `\nDESCRIPTION:${description}`;
+    if (due) vtodo += `\nDUE:${this.formatICalDate(new Date(due))}`;
+    if (priority) vtodo += `\nPRIORITY:${priority}`;
 
-    vtodo += `\nEND:VTODO
-END:VCALENDAR`;
+    vtodo += `\nEND:VTODO\nEND:VCALENDAR`;
 
     try {
-      const caldavPath = `/remote.php/dav/calendars/${this.config.username}/tasks/${uid}.ics`;
-
+      const caldavPath = `/remote.php/dav/calendars/${this.config.username}/${listId}/${uid}.ics`;
       await this.axiosInstance.put(caldavPath, vtodo, {
-        headers: {
-          "Content-Type": "text/calendar",
-        },
+        headers: { "Content-Type": "text/calendar" },
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: `Task created successfully with UID: ${uid}`,
-          },
-        ],
+        content: [{ type: "text", text: `Task created in list "${listId}" with UID: ${uid}` }],
       };
     } catch (error: any) {
       throw new Error(`Failed to create task: ${error.message}`);
@@ -483,20 +540,23 @@ END:VCALENDAR`;
 
   private async updateTask(args: any) {
     const { taskId, summary, status, percentComplete } = args;
+    const listId: string = args.listId || "tasks";
 
-    // First, fetch the existing task
-    const caldavPath = `/remote.php/dav/calendars/${this.config.username}/tasks/${taskId}.ics`;
+    const caldavPath = `/remote.php/dav/calendars/${this.config.username}/${listId}/${taskId}.ics`;
 
     try {
       const response = await this.axiosInstance.get(caldavPath);
       let vtodo = response.data;
 
-      // Update fields
       if (summary) {
         vtodo = vtodo.replace(/SUMMARY:.*/, `SUMMARY:${summary}`);
       }
       if (status) {
-        vtodo = vtodo.replace(/STATUS:.*/, `STATUS:${status}`);
+        if (vtodo.includes("STATUS:")) {
+          vtodo = vtodo.replace(/STATUS:.*/, `STATUS:${status}`);
+        } else {
+          vtodo = vtodo.replace(/END:VTODO/, `STATUS:${status}\nEND:VTODO`);
+        }
       }
       if (percentComplete !== undefined) {
         if (vtodo.includes("PERCENT-COMPLETE:")) {
@@ -512,25 +572,20 @@ END:VCALENDAR`;
         }
       }
 
-      // Update LAST-MODIFIED
-      vtodo = vtodo.replace(
-        /LAST-MODIFIED:.*/,
-        `LAST-MODIFIED:${this.formatICalDateTime(new Date())}`
-      );
+      // Upsert LAST-MODIFIED
+      const lastMod = `LAST-MODIFIED:${this.formatICalDateTime(new Date())}`;
+      if (vtodo.includes("LAST-MODIFIED:")) {
+        vtodo = vtodo.replace(/LAST-MODIFIED:.*/, lastMod);
+      } else {
+        vtodo = vtodo.replace(/END:VTODO/, `${lastMod}\nEND:VTODO`);
+      }
 
       await this.axiosInstance.put(caldavPath, vtodo, {
-        headers: {
-          "Content-Type": "text/calendar",
-        },
+        headers: { "Content-Type": "text/calendar" },
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: `Task ${taskId} updated successfully`,
-          },
-        ],
+        content: [{ type: "text", text: `Task ${taskId} in list "${listId}" updated successfully` }],
       };
     } catch (error: any) {
       throw new Error(`Failed to update task: ${error.message}`);
@@ -538,14 +593,12 @@ END:VCALENDAR`;
   }
 
   // ========== CALENDAR METHODS ==========
+
   private async getCalendarEvents(args: any) {
     const startDate = args.startDate || format(new Date(), "yyyy-MM-dd");
     const endDate =
       args.endDate ||
-      format(
-        new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-        "yyyy-MM-dd"
-      );
+      format(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), "yyyy-MM-dd");
     const limit = args.limit || 50;
 
     try {
@@ -560,9 +613,7 @@ END:VCALENDAR`;
   <c:filter>
     <c:comp-filter name="VCALENDAR">
       <c:comp-filter name="VEVENT">
-        <c:time-range start="${this.formatICalDate(
-          new Date(startDate)
-        )}" end="${this.formatICalDate(new Date(endDate))}"/>
+        <c:time-range start="${this.formatICalDate(new Date(startDate))}" end="${this.formatICalDate(new Date(endDate))}"/>
       </c:comp-filter>
     </c:comp-filter>
   </c:filter>
@@ -572,21 +623,13 @@ END:VCALENDAR`;
         method: "REPORT",
         url: caldavPath,
         data: requestBody,
-        headers: {
-          "Content-Type": "application/xml",
-          Depth: "1",
-        },
+        headers: { "Content-Type": "application/xml", Depth: "1" },
       });
 
       const events = this.parseEventsFromCalDAV(response.data, limit);
 
       return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(events, null, 2),
-          },
-        ],
+        content: [{ type: "text", text: JSON.stringify(events, null, 2) }],
       };
     } catch (error: any) {
       throw new Error(`Failed to fetch calendar events: ${error.message}`);
@@ -602,13 +645,8 @@ END:VCALENDAR`;
 
     for (const match of eventMatches) {
       if (events.length >= limit) break;
-
-      const eventData = match[1];
-      const event = this.parseVEVENT(eventData);
-
-      if (event) {
-        events.push(event);
-      }
+      const event = this.parseVEVENT(match[1]);
+      if (event) events.push(event);
     }
 
     return events;
@@ -628,15 +666,11 @@ END:VCALENDAR`;
       } else if (line.startsWith("LOCATION:")) {
         event.location = line.substring(9).trim();
       } else if (line.startsWith("DTSTART")) {
-        const startMatch = line.match(/DTSTART[^:]*:(\d{8}T?\d{6}Z?)/);
-        if (startMatch) {
-          event.start = this.parseICalDate(startMatch[1]);
-        }
+        const m = line.match(/DTSTART[^:]*:(\d{8}T?\d{6}Z?)/);
+        if (m) event.start = this.parseICalDate(m[1]);
       } else if (line.startsWith("DTEND")) {
-        const endMatch = line.match(/DTEND[^:]*:(\d{8}T?\d{6}Z?)/);
-        if (endMatch) {
-          event.end = this.parseICalDate(endMatch[1]);
-        }
+        const m = line.match(/DTEND[^:]*:(\d{8}T?\d{6}Z?)/);
+        if (m) event.end = this.parseICalDate(m[1]);
       }
     }
 
@@ -657,32 +691,19 @@ DTSTART:${this.formatICalDateTime(new Date(startDateTime))}
 DTEND:${this.formatICalDateTime(new Date(endDateTime))}
 CREATED:${this.formatICalDateTime(new Date())}`;
 
-    if (description) {
-      vevent += `\nDESCRIPTION:${description}`;
-    }
-    if (location) {
-      vevent += `\nLOCATION:${location}`;
-    }
+    if (description) vevent += `\nDESCRIPTION:${description}`;
+    if (location) vevent += `\nLOCATION:${location}`;
 
-    vevent += `\nEND:VEVENT
-END:VCALENDAR`;
+    vevent += `\nEND:VEVENT\nEND:VCALENDAR`;
 
     try {
       const caldavPath = `/remote.php/dav/calendars/${this.config.username}/personal/${uid}.ics`;
-
       await this.axiosInstance.put(caldavPath, vevent, {
-        headers: {
-          "Content-Type": "text/calendar",
-        },
+        headers: { "Content-Type": "text/calendar" },
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: `Calendar event created successfully with UID: ${uid}`,
-          },
-        ],
+        content: [{ type: "text", text: `Calendar event created with UID: ${uid}` }],
       };
     } catch (error: any) {
       throw new Error(`Failed to create calendar event: ${error.message}`);
@@ -690,29 +711,18 @@ END:VCALENDAR`;
   }
 
   // ========== NOTES METHODS ==========
+
   private async getNotes(args: any) {
     const limit = args.limit || 50;
 
     try {
       const response = await this.axiosInstance.get(
         `/index.php/apps/notes/api/v1/notes`,
-        {
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-          },
-        }
+        { headers: { Accept: "application/json", "Content-Type": "application/json" } }
       );
 
-      const notes = response.data.slice(0, limit);
-
       return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(notes, null, 2),
-          },
-        ],
+        content: [{ type: "text", text: JSON.stringify(response.data.slice(0, limit), null, 2) }],
       };
     } catch (error: any) {
       throw new Error(`Failed to fetch notes: ${error.message}`);
@@ -721,37 +731,20 @@ END:VCALENDAR`;
 
   private async createNote(args: any) {
     const { title, content, category } = args;
-
-    // Nextcloud Notes uses the first line as title
     const noteContent = title ? `${title}\n\n${content}` : content;
 
     try {
-      const payload: any = {
-        content: noteContent,
-      };
-
-      if (category) {
-        payload.category = category;
-      }
+      const payload: any = { content: noteContent };
+      if (category) payload.category = category;
 
       const response = await this.axiosInstance.post(
         `/index.php/apps/notes/api/v1/notes`,
         payload,
-        {
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-          },
-        }
+        { headers: { Accept: "application/json", "Content-Type": "application/json" } }
       );
 
       return {
-        content: [
-          {
-            type: "text",
-            text: `Note created successfully with ID: ${response.data.id}`,
-          },
-        ],
+        content: [{ type: "text", text: `Note created with ID: ${response.data.id}` }],
       };
     } catch (error: any) {
       throw new Error(`Failed to create note: ${error.message}`);
@@ -764,21 +757,11 @@ END:VCALENDAR`;
     try {
       const response = await this.axiosInstance.get(
         `/index.php/apps/notes/api/v1/notes/${noteId}`,
-        {
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-          },
-        }
+        { headers: { Accept: "application/json", "Content-Type": "application/json" } }
       );
 
       return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(response.data, null, 2),
-          },
-        ],
+        content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }],
       };
     } catch (error: any) {
       throw new Error(`Failed to fetch note: ${error.message}`);
@@ -786,51 +769,30 @@ END:VCALENDAR`;
   }
 
   // ========== EMAIL METHODS ==========
+
   private async getEmails(args: any) {
     const accountId = args.accountId || 0;
     const limit = args.limit || 20;
 
     try {
-      // Get mailboxes first
       const mailboxesResponse = await this.axiosInstance.get(
         `/index.php/apps/mail/api/accounts/${accountId}/mailboxes`,
-        {
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-          },
-        }
+        { headers: { Accept: "application/json", "Content-Type": "application/json" } }
       );
 
-      // Find INBOX
       const inbox = mailboxesResponse.data.find(
         (mb: any) => mb.specialRole === "inbox"
       );
 
-      if (!inbox) {
-        throw new Error("Inbox not found");
-      }
+      if (!inbox) throw new Error("Inbox not found");
 
-      // Get messages from inbox
       const messagesResponse = await this.axiosInstance.get(
         `/index.php/apps/mail/api/messages?mailboxId=${inbox.id}`,
-        {
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-          },
-        }
+        { headers: { Accept: "application/json", "Content-Type": "application/json" } }
       );
 
-      const emails = messagesResponse.data.slice(0, limit);
-
       return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(emails, null, 2),
-          },
-        ],
+        content: [{ type: "text", text: JSON.stringify(messagesResponse.data.slice(0, limit), null, 2) }],
       };
     } catch (error: any) {
       throw new Error(`Failed to fetch emails: ${error.message}`);
@@ -838,6 +800,7 @@ END:VCALENDAR`;
   }
 
   // ========== UTILITY METHODS ==========
+
   private generateUID(): string {
     return `${Date.now()}-${Math.random().toString(36).substring(7)}`;
   }
@@ -851,20 +814,10 @@ END:VCALENDAR`;
   }
 
   private parseICalDate(icalDate: string): string {
-    // Parse iCal date format (e.g., 20240101 or 20240101T120000Z)
     if (icalDate.includes("T")) {
-      const year = icalDate.substring(0, 4);
-      const month = icalDate.substring(4, 6);
-      const day = icalDate.substring(6, 8);
-      const hour = icalDate.substring(9, 11);
-      const minute = icalDate.substring(11, 13);
-      return `${year}-${month}-${day} ${hour}:${minute}`;
-    } else {
-      const year = icalDate.substring(0, 4);
-      const month = icalDate.substring(4, 6);
-      const day = icalDate.substring(6, 8);
-      return `${year}-${month}-${day}`;
+      return `${icalDate.substring(0, 4)}-${icalDate.substring(4, 6)}-${icalDate.substring(6, 8)} ${icalDate.substring(9, 11)}:${icalDate.substring(11, 13)}`;
     }
+    return `${icalDate.substring(0, 4)}-${icalDate.substring(4, 6)}-${icalDate.substring(6, 8)}`;
   }
 
   async run(): Promise<void> {
