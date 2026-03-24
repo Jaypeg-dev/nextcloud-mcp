@@ -30,7 +30,7 @@ class NextcloudMCPServer {
   constructor(config: NextcloudConfig) {
     this.config = config;
     this.server = new Server(
-      { name: "nextcloud-mcp-server", version: "1.2.0" },
+      { name: "nextcloud-mcp-server", version: "1.2.1" },
       { capabilities: { tools: {} } }
     );
 
@@ -56,16 +56,16 @@ class NextcloudMCPServer {
       const { name, arguments: args } = request.params;
       try {
         switch (name) {
-          case "get_task_lists":       return await this.getTaskLists();
-          case "get_tasks":            return await this.getTasks(args as any);
-          case "create_task":          return await this.createTask(args as any);
-          case "update_task":          return await this.updateTask(args as any);
-          case "get_calendar_events":  return await this.getCalendarEvents(args as any);
-          case "create_calendar_event":return await this.createCalendarEvent(args as any);
-          case "get_notes":            return await this.getNotes(args as any);
-          case "create_note":          return await this.createNote(args as any);
-          case "get_note_content":     return await this.getNoteContent(args as any);
-          case "get_emails":           return await this.getEmails(args as any);
+          case "get_task_lists":        return await this.getTaskLists();
+          case "get_tasks":             return await this.getTasks(args as any);
+          case "create_task":           return await this.createTask(args as any);
+          case "update_task":           return await this.updateTask(args as any);
+          case "get_calendar_events":   return await this.getCalendarEvents(args as any);
+          case "create_calendar_event": return await this.createCalendarEvent(args as any);
+          case "get_notes":             return await this.getNotes(args as any);
+          case "create_note":           return await this.createNote(args as any);
+          case "get_note_content":      return await this.getNoteContent(args as any);
+          case "get_emails":            return await this.getEmails(args as any);
           default: throw new Error(`Unknown tool: ${name}`);
         }
       } catch (error: any) {
@@ -121,7 +121,7 @@ class NextcloudMCPServer {
             description: { type: "string", description: "Task description (optional)" },
             due: { type: "string", description: "Due date YYYY-MM-DD (optional)" },
             priority: { type: "number", description: "Priority 1-9 where 1 is highest (optional)" },
-            listId: { type: "string", description: "List to create in (default: first discovered list)", default: "personal" },
+            listId: { type: "string", description: "List to create in (default: personal)", default: "personal" },
           },
           required: ["summary"],
         },
@@ -133,7 +133,7 @@ class NextcloudMCPServer {
           type: "object",
           properties: {
             taskId: { type: "string", description: "Task UID" },
-            listId: { type: "string", description: "List the task lives in (required if not in default list)" },
+            listId: { type: "string", description: "List the task lives in (required if not in personal list)" },
             summary: { type: "string", description: "New title (optional)" },
             status: { type: "string", enum: ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"], description: "New status (optional)" },
             percentComplete: { type: "number", description: "Completion 0-100 (optional)" },
@@ -230,7 +230,6 @@ class NextcloudMCPServer {
 
   private parseTaskListsFromPropfind(xmlData: string): TaskList[] {
     const lists: TaskList[] = [];
-
     const responseMatches = xmlData.matchAll(/<d:response>([\s\S]*?)<\/d:response>/g);
 
     for (const match of responseMatches) {
@@ -319,12 +318,7 @@ class NextcloudMCPServer {
       headers: { "Content-Type": "application/xml", Depth: "1" },
     });
 
-    const xml: string = response.data;
-
-    // Debug: log first 800 chars of response so we can see the actual namespace prefix used
-    console.error(`[fetchTasksFromList] "${list.id}" response prefix: ${xml.substring(0, 800)}`);
-
-    return this.parseTasksFromCalDAV(xml, status, limit, list.id, list.displayName);
+    return this.parseTasksFromCalDAV(response.data, status, limit, list.id, list.displayName);
   }
 
   private parseTasksFromCalDAV(
@@ -336,7 +330,7 @@ class NextcloudMCPServer {
   ): any[] {
     const tasks: any[] = [];
 
-    // Namespace-agnostic: match calendar-data regardless of prefix (c:, cal:, x:, etc.)
+    // Namespace-agnostic: matches calendar-data regardless of prefix (c:, cal:, x:, etc.)
     const todoMatches = xmlData.matchAll(
       /<[^:>\s]+:calendar-data[^>]*>([\s\S]*?)<\/[^:>\s]+:calendar-data>/g
     );
@@ -346,8 +340,10 @@ class NextcloudMCPServer {
 
       const task = this.parseVTODO(match[1]);
       if (!task) continue;
+
+      // Skip Deck board column headers — not real tasks
       if (task.uid && task.uid.startsWith("deck-stack-")) continue;
-      
+
       task.listId = listId;
       task.listName = listName;
 
@@ -368,16 +364,16 @@ class NextcloudMCPServer {
     const task: any = {};
 
     for (const line of lines) {
-      if (line.startsWith("UID:"))                task.uid = line.substring(4).trim();
-      else if (line.startsWith("SUMMARY:"))       task.summary = line.substring(8).trim();
-      else if (line.startsWith("STATUS:"))        task.status = line.substring(7).trim();
+      if (line.startsWith("UID:"))                 task.uid = line.substring(4).trim();
+      else if (line.startsWith("SUMMARY:"))        task.summary = line.substring(8).trim();
+      else if (line.startsWith("STATUS:"))         task.status = line.substring(7).trim();
       else if (line.startsWith("PERCENT-COMPLETE:")) task.percentComplete = parseInt(line.substring(17).trim());
       else if (line.startsWith("DUE")) {
         const m = line.match(/DUE[^:]*:(\d{8}T?\d{6}Z?)/);
         if (m) task.due = this.parseICalDate(m[1]);
       }
-      else if (line.startsWith("PRIORITY:"))     task.priority = parseInt(line.substring(9).trim());
-      else if (line.startsWith("DESCRIPTION:"))  task.description = line.substring(12).trim();
+      else if (line.startsWith("PRIORITY:"))      task.priority = parseInt(line.substring(9).trim());
+      else if (line.startsWith("DESCRIPTION:"))   task.description = line.substring(12).trim();
     }
 
     return task.uid ? task : null;
@@ -467,7 +463,6 @@ class NextcloudMCPServer {
       });
 
       const xml: string = response.data;
-      // Namespace-agnostic extraction
       const events: any[] = [];
       const eventMatches = xml.matchAll(/<[^:>\s]+:calendar-data[^>]*>([\s\S]*?)<\/[^:>\s]+:calendar-data>/g);
       for (const match of eventMatches) {
@@ -487,10 +482,10 @@ class NextcloudMCPServer {
     const event: any = {};
 
     for (const line of lines) {
-      if (line.startsWith("UID:"))          event.uid = line.substring(4).trim();
-      else if (line.startsWith("SUMMARY:")) event.summary = line.substring(8).trim();
+      if (line.startsWith("UID:"))             event.uid = line.substring(4).trim();
+      else if (line.startsWith("SUMMARY:"))    event.summary = line.substring(8).trim();
       else if (line.startsWith("DESCRIPTION:")) event.description = line.substring(12).trim();
-      else if (line.startsWith("LOCATION:"))event.location = line.substring(9).trim();
+      else if (line.startsWith("LOCATION:"))   event.location = line.substring(9).trim();
       else if (line.startsWith("DTSTART")) {
         const m = line.match(/DTSTART[^:]*:(\d{8}T?\d{6}Z?)/);
         if (m) event.start = this.parseICalDate(m[1]);
