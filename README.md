@@ -140,14 +140,12 @@ Add a location block to your existing SSL vhost. SSE requires buffering to be di
 
 ```apache
 <Location /mcp/>
-    ProxyPass        http://localhost:3000/
+    ProxyPass        http://localhost:3000/ flushpackets=on
     ProxyPassReverse http://localhost:3000/
 
-    # Required for SSE — disable buffering
-    ProxyIOBufferSize    0
-    ProxyBuffering       off
-    SetEnv               proxy-nokeepalive 1
-    SetEnv               proxy-initial-not-buffered 1
+    # Required for SSE — flush packets immediately rather than buffering
+    SetEnv           proxy-nokeepalive 1
+    SetEnv           proxy-initial-not-buffered 1
 </Location>
 ```
 
