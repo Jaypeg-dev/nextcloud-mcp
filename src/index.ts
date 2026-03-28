@@ -2,6 +2,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -9,6 +10,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import axios, { AxiosInstance } from "axios";
 import { format } from "date-fns";
+import express from "express";
 
 interface NextcloudConfig {
   url: string;
@@ -23,36 +25,30 @@ interface TaskList {
 }
 
 class NextcloudMCPServer {
-  private server: Server;
   private axiosInstance: AxiosInstance;
   private config: NextcloudConfig;
 
   constructor(config: NextcloudConfig) {
     this.config = config;
-    this.server = new Server(
-      { name: "nextcloud-mcp-server", version: "1.3.0" },
-      { capabilities: { tools: {} } }
-    );
-
     this.axiosInstance = axios.create({
       baseURL: config.url,
       auth: { username: config.username, password: config.password },
       headers: { "Content-Type": "application/xml", "Accept": "application/xml" },
     });
-
-    this.setupHandlers();
-    this.setupErrorHandling();
   }
 
-  private setupErrorHandling(): void {
-    this.server.onerror = (error) => console.error("[MCP Error]", error);
-    process.on("SIGINT", async () => { await this.server.close(); process.exit(0); });
-  }
+  /** Creates and fully configures a fresh MCP Server instance. */
+  private createMCPServer(): Server {
+    const server = new Server(
+      { name: "nextcloud-mcp-server", version: "1.3.0" },
+      { capabilities: { tools: {} } }
+    );
 
-  private setupHandlers(): void {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: this.getTools() }));
+    server.onerror = (error) => console.error("[MCP Error]", error);
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: this.getTools() }));
+
+    server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       try {
         switch (name) {
@@ -84,6 +80,8 @@ class NextcloudMCPServer {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     });
+
+    return server;
   }
 
   private getTools(): Tool[] {
@@ -1034,9 +1032,80 @@ class NextcloudMCPServer {
   }
 
   async run(): Promise<void> {
+    const mode = process.env.MCP_TRANSPORT || "stdio";
+    if (mode === "http") {
+      await this.runHttp();
+    } else {
+      await this.runStdio();
+    }
+  }
+
+  private async runStdio(): Promise<void> {
+    const server = this.createMCPServer();
+    process.on("SIGINT", async () => { await server.close(); process.exit(0); });
     const transport = new StdioServerTransport();
-    await this.server.connect(transport);
+    await server.connect(transport);
     console.error("Nextcloud MCP Server running on stdio");
+  }
+
+  private async runHttp(): Promise<void> {
+    const port = parseInt(process.env.MCP_PORT || "3000");
+    const authToken = process.env.MCP_AUTH_TOKEN;
+
+    const app = express();
+    app.use(express.json());
+
+    // Optional bearer token auth — skip for health check
+    if (authToken) {
+      app.use((req, res, next) => {
+        if (req.path === "/health") return next();
+        const auth = req.headers.authorization;
+        if (auth !== `Bearer ${authToken}`) {
+          res.status(401).json({ error: "Unauthorized" });
+          return;
+        }
+        next();
+      });
+    }
+
+    app.get("/health", (_req, res) => {
+      res.json({ status: "ok", name: "nextcloud-mcp-server", version: "1.3.0" });
+    });
+
+    // Track active SSE transports by session ID so POST messages can be routed
+    const transports = new Map<string, SSEServerTransport>();
+
+    app.get("/sse", async (_req, res) => {
+      const server = this.createMCPServer();
+      const transport = new SSEServerTransport("/messages", res);
+      transports.set(transport.sessionId, transport);
+
+      res.on("close", () => {
+        transports.delete(transport.sessionId);
+      });
+
+      await server.connect(transport);
+    });
+
+    app.post("/messages", async (req, res) => {
+      const sessionId = req.query.sessionId as string;
+      const transport = transports.get(sessionId);
+      if (!transport) {
+        res.status(404).json({ error: "Session not found" });
+        return;
+      }
+      await transport.handlePostMessage(req, res, req.body);
+    });
+
+    process.on("SIGINT", async () => {
+      for (const t of transports.values()) await t.close();
+      process.exit(0);
+    });
+
+    app.listen(port, () => {
+      console.error(`Nextcloud MCP Server running on HTTP (SSE) — port ${port}`);
+      if (authToken) console.error("Bearer token auth enabled");
+    });
   }
 }
 
