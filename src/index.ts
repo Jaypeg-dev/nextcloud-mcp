@@ -30,7 +30,7 @@ class NextcloudMCPServer {
   constructor(config: NextcloudConfig) {
     this.config = config;
     this.server = new Server(
-      { name: "nextcloud-mcp-server", version: "1.2.1" },
+      { name: "nextcloud-mcp-server", version: "1.3.0" },
       { capabilities: { tools: {} } }
     );
 
@@ -66,6 +66,18 @@ class NextcloudMCPServer {
           case "create_note":           return await this.createNote(args as any);
           case "get_note_content":      return await this.getNoteContent(args as any);
           case "get_emails":            return await this.getEmails(args as any);
+          // Files
+          case "list_files":            return await this.listFiles(args as any);
+          case "get_file":              return await this.getFile(args as any);
+          case "upload_file":           return await this.uploadFile(args as any);
+          case "create_folder":         return await this.createFolder(args as any);
+          case "move_file":             return await this.moveFile(args as any);
+          // Deck
+          case "get_deck_boards":       return await this.getDeckBoards();
+          case "get_deck_board":        return await this.getDeckBoard(args as any);
+          case "create_deck_card":      return await this.createDeckCard(args as any);
+          case "update_deck_card":      return await this.updateDeckCard(args as any);
+          case "move_deck_card":        return await this.moveDeckCard(args as any);
           default: throw new Error(`Unknown tool: ${name}`);
         }
       } catch (error: any) {
@@ -200,6 +212,147 @@ class NextcloudMCPServer {
             accountId: { type: "number", default: 0 },
             limit: { type: "number", default: 20 },
           },
+        },
+      },
+      // ---- Files ----
+      {
+        name: "list_files",
+        description: "List files and folders in a Nextcloud directory. Returns name, type (file/folder), size, and last modified date for each item.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Directory path relative to user root (e.g. '/' for home, 'Documents', 'Documents/Reports'). Defaults to root.",
+              default: "/",
+            },
+          },
+        },
+      },
+      {
+        name: "get_file",
+        description: "Download and return the content of a file from Nextcloud. Best suited for text files (markdown, txt, csv, json, etc.).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "File path relative to user root (e.g. 'Documents/notes.md')",
+            },
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "upload_file",
+        description: "Create or overwrite a file in Nextcloud with the given text content.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Destination path relative to user root (e.g. 'Documents/notes.md')",
+            },
+            content: {
+              type: "string",
+              description: "Text content to write to the file",
+            },
+          },
+          required: ["path", "content"],
+        },
+      },
+      {
+        name: "create_folder",
+        description: "Create a new folder in Nextcloud.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Folder path to create relative to user root (e.g. 'Projects/NewProject')",
+            },
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "move_file",
+        description: "Move or rename a file or folder in Nextcloud.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            fromPath: {
+              type: "string",
+              description: "Current path of the file/folder relative to user root",
+            },
+            toPath: {
+              type: "string",
+              description: "New destination path relative to user root",
+            },
+          },
+          required: ["fromPath", "toPath"],
+        },
+      },
+      // ---- Deck ----
+      {
+        name: "get_deck_boards",
+        description: "List all Nextcloud Deck boards the user has access to. Returns board IDs, titles, and colors.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "get_deck_board",
+        description: "Get a Deck board with all its stacks (columns) and cards. Use get_deck_boards first to find the board ID.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            boardId: { type: "number", description: "Board ID from get_deck_boards" },
+          },
+          required: ["boardId"],
+        },
+      },
+      {
+        name: "create_deck_card",
+        description: "Create a new card in a Nextcloud Deck board stack (column). Use get_deck_board to find stack IDs.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            boardId: { type: "number", description: "Board ID" },
+            stackId: { type: "number", description: "Stack (column) ID to add the card to" },
+            title: { type: "string", description: "Card title" },
+            description: { type: "string", description: "Card description/notes (optional)" },
+            dueDate: { type: "string", description: "Due date YYYY-MM-DD (optional)" },
+          },
+          required: ["boardId", "stackId", "title"],
+        },
+      },
+      {
+        name: "update_deck_card",
+        description: "Update an existing Deck card's title, description, or due date.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            boardId: { type: "number", description: "Board ID" },
+            stackId: { type: "number", description: "Stack (column) ID the card currently belongs to" },
+            cardId: { type: "number", description: "Card ID" },
+            title: { type: "string", description: "New title (optional)" },
+            description: { type: "string", description: "New description (optional)" },
+            dueDate: { type: "string", description: "New due date YYYY-MM-DD, or null to clear (optional)" },
+          },
+          required: ["boardId", "stackId", "cardId"],
+        },
+      },
+      {
+        name: "move_deck_card",
+        description: "Move a Deck card to a different stack (column), e.g. from 'To Do' to 'In Progress'.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            boardId: { type: "number", description: "Board ID" },
+            stackId: { type: "number", description: "Current stack (column) ID of the card" },
+            cardId: { type: "number", description: "Card ID to move" },
+            targetStackId: { type: "number", description: "Destination stack (column) ID" },
+          },
+          required: ["boardId", "stackId", "cardId", "targetStackId"],
         },
       },
     ];
@@ -583,6 +736,279 @@ class NextcloudMCPServer {
       return { content: [{ type: "text", text: JSON.stringify(messagesResponse.data.slice(0, limit), null, 2) }] };
     } catch (error: any) {
       throw new Error(`Failed to fetch emails: ${error.message}`);
+    }
+  }
+
+  // ========== FILES METHODS ==========
+
+  private filesPath(relativePath: string): string {
+    const clean = relativePath.replace(/^\/+/, "");
+    return `/remote.php/dav/files/${this.config.username}/${clean}`;
+  }
+
+  private async listFiles(args: any) {
+    const path = args.path || "/";
+    const davPath = this.filesPath(path);
+
+    const body = `<?xml version="1.0" encoding="UTF-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:prop>
+    <d:displayname/>
+    <d:resourcetype/>
+    <d:getcontentlength/>
+    <d:getcontenttype/>
+    <d:getlastmodified/>
+  </d:prop>
+</d:propfind>`;
+
+    try {
+      const response = await this.axiosInstance.request({
+        method: "PROPFIND",
+        url: davPath,
+        data: body,
+        headers: { "Content-Type": "application/xml", Depth: "1" },
+      });
+
+      const items = this.parsePropfindFiles(response.data, davPath);
+      return { content: [{ type: "text", text: JSON.stringify(items, null, 2) }] };
+    } catch (error: any) {
+      throw new Error(`Failed to list files at "${path}": ${error.message}`);
+    }
+  }
+
+  private parsePropfindFiles(xml: string, requestedPath: string): any[] {
+    const items: any[] = [];
+    const responseBlocks = xml.matchAll(/<d:response>([\s\S]*?)<\/d:response>/g);
+
+    for (const match of responseBlocks) {
+      const block = match[1];
+      const hrefMatch = block.match(/<d:href>([^<]+)<\/d:href>/);
+      if (!hrefMatch) continue;
+
+      const href = decodeURIComponent(hrefMatch[1].trim());
+      // Skip the directory itself (the requested path is the first response)
+      const normalizedRequest = requestedPath.replace(/\/$/, "");
+      const normalizedHref = href.replace(/\/$/, "");
+      if (normalizedHref === normalizedRequest) continue;
+
+      const isFolder = block.includes("<d:collection");
+      const nameMatch = block.match(/<d:displayname>([^<]*)<\/d:displayname>/);
+      const sizeMatch = block.match(/<d:getcontentlength>([^<]+)<\/d:getcontentlength>/);
+      const modifiedMatch = block.match(/<d:getlastmodified>([^<]+)<\/d:getlastmodified>/);
+      const mimeMatch = block.match(/<d:getcontenttype>([^<]+)<\/d:getcontenttype>/);
+
+      const segments = href.replace(/\/$/, "").split("/");
+      const name = nameMatch ? nameMatch[1] : segments[segments.length - 1];
+
+      items.push({
+        name,
+        type: isFolder ? "folder" : "file",
+        ...(isFolder ? {} : { size: sizeMatch ? parseInt(sizeMatch[1]) : null }),
+        ...(isFolder ? {} : { mimeType: mimeMatch ? mimeMatch[1] : null }),
+        lastModified: modifiedMatch ? modifiedMatch[1] : null,
+        path: href,
+      });
+    }
+
+    return items;
+  }
+
+  private async getFile(args: any) {
+    const { path } = args;
+    try {
+      const response = await this.axiosInstance.get(this.filesPath(path), {
+        headers: { Accept: "*/*" },
+        responseType: "text",
+      });
+      return { content: [{ type: "text", text: response.data }] };
+    } catch (error: any) {
+      throw new Error(`Failed to get file "${path}": ${error.message}`);
+    }
+  }
+
+  private async uploadFile(args: any) {
+    const { path, content } = args;
+    try {
+      await this.axiosInstance.put(this.filesPath(path), content, {
+        headers: { "Content-Type": "text/plain" },
+      });
+      return { content: [{ type: "text", text: `File uploaded to "${path}"` }] };
+    } catch (error: any) {
+      throw new Error(`Failed to upload file "${path}": ${error.message}`);
+    }
+  }
+
+  private async createFolder(args: any) {
+    const { path } = args;
+    try {
+      await this.axiosInstance.request({
+        method: "MKCOL",
+        url: this.filesPath(path),
+      });
+      return { content: [{ type: "text", text: `Folder created at "${path}"` }] };
+    } catch (error: any) {
+      throw new Error(`Failed to create folder "${path}": ${error.message}`);
+    }
+  }
+
+  private async moveFile(args: any) {
+    const { fromPath, toPath } = args;
+    const destination = `${this.config.url}${this.filesPath(toPath)}`;
+    try {
+      await this.axiosInstance.request({
+        method: "MOVE",
+        url: this.filesPath(fromPath),
+        headers: { Destination: destination, Overwrite: "T" },
+      });
+      return { content: [{ type: "text", text: `Moved "${fromPath}" to "${toPath}"` }] };
+    } catch (error: any) {
+      throw new Error(`Failed to move "${fromPath}" to "${toPath}": ${error.message}`);
+    }
+  }
+
+  // ========== DECK METHODS ==========
+
+  private deckHeaders() {
+    return { Accept: "application/json", "Content-Type": "application/json", "OCS-APIRequest": "true" };
+  }
+
+  private deckData(response: any): any {
+    return response.data?.ocs?.data ?? response.data;
+  }
+
+  private async getDeckBoards() {
+    try {
+      const response = await this.axiosInstance.get(
+        "/ocs/v2.php/apps/deck/api/v1.0/boards",
+        { headers: this.deckHeaders() }
+      );
+      const boards = this.deckData(response).map((b: any) => ({
+        id: b.id,
+        title: b.title,
+        color: b.color,
+        archived: b.archived,
+        stacksCount: b.stacks?.length ?? 0,
+      }));
+      return { content: [{ type: "text", text: JSON.stringify(boards, null, 2) }] };
+    } catch (error: any) {
+      throw new Error(`Failed to fetch Deck boards: ${error.message}`);
+    }
+  }
+
+  private async getDeckBoard(args: any) {
+    const { boardId } = args;
+    try {
+      const [boardResp, stacksResp] = await Promise.all([
+        this.axiosInstance.get(`/ocs/v2.php/apps/deck/api/v1.0/boards/${boardId}`, { headers: this.deckHeaders() }),
+        this.axiosInstance.get(`/ocs/v2.php/apps/deck/api/v1.0/boards/${boardId}/stacks`, { headers: this.deckHeaders() }),
+      ]);
+
+      const board = this.deckData(boardResp);
+      const stacks = this.deckData(stacksResp).map((stack: any) => ({
+        id: stack.id,
+        title: stack.title,
+        order: stack.order,
+        cards: (stack.cards || []).map((card: any) => ({
+          id: card.id,
+          title: card.title,
+          description: card.description || null,
+          dueDate: card.duedate || null,
+          archived: card.archived,
+          order: card.order,
+          assignees: (card.assignedUsers || []).map((u: any) => u.participant?.displayname || u.participant?.uid),
+          labels: (card.labels || []).map((l: any) => l.title),
+        })),
+      }));
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ id: board.id, title: board.title, color: board.color, stacks }, null, 2),
+        }],
+      };
+    } catch (error: any) {
+      throw new Error(`Failed to fetch Deck board ${boardId}: ${error.message}`);
+    }
+  }
+
+  private async createDeckCard(args: any) {
+    const { boardId, stackId, title, description, dueDate } = args;
+    const payload: any = { title, type: "plain", order: 999 };
+    if (description) payload.description = description;
+    if (dueDate)     payload.duedate = `${dueDate}T00:00:00+00:00`;
+
+    try {
+      const response = await this.axiosInstance.post(
+        `/ocs/v2.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards`,
+        payload,
+        { headers: this.deckHeaders() }
+      );
+      const card = this.deckData(response);
+      return { content: [{ type: "text", text: `Deck card created with ID: ${card.id} — "${card.title}"` }] };
+    } catch (error: any) {
+      throw new Error(`Failed to create Deck card: ${error.message}`);
+    }
+  }
+
+  private async updateDeckCard(args: any) {
+    const { boardId, stackId, cardId, title, description, dueDate } = args;
+
+    // Fetch current card to preserve required fields
+    try {
+      const currentResp = await this.axiosInstance.get(
+        `/ocs/v2.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`,
+        { headers: this.deckHeaders() }
+      );
+      const current = this.deckData(currentResp);
+
+      const payload: any = {
+        title: title ?? current.title,
+        description: description ?? current.description,
+        type: current.type || "plain",
+        order: current.order ?? 0,
+        duedate: dueDate !== undefined
+          ? (dueDate ? `${dueDate}T00:00:00+00:00` : null)
+          : current.duedate,
+      };
+
+      await this.axiosInstance.put(
+        `/ocs/v2.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`,
+        payload,
+        { headers: this.deckHeaders() }
+      );
+      return { content: [{ type: "text", text: `Deck card ${cardId} updated successfully` }] };
+    } catch (error: any) {
+      throw new Error(`Failed to update Deck card ${cardId}: ${error.message}`);
+    }
+  }
+
+  private async moveDeckCard(args: any) {
+    const { boardId, stackId, cardId, targetStackId } = args;
+
+    try {
+      const currentResp = await this.axiosInstance.get(
+        `/ocs/v2.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`,
+        { headers: this.deckHeaders() }
+      );
+      const current = this.deckData(currentResp);
+
+      const payload: any = {
+        title: current.title,
+        description: current.description,
+        type: current.type || "plain",
+        order: current.order ?? 0,
+        duedate: current.duedate,
+        stackId: targetStackId,
+      };
+
+      await this.axiosInstance.put(
+        `/ocs/v2.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`,
+        payload,
+        { headers: this.deckHeaders() }
+      );
+      return { content: [{ type: "text", text: `Deck card ${cardId} moved to stack ${targetStackId}` }] };
+    } catch (error: any) {
+      throw new Error(`Failed to move Deck card ${cardId}: ${error.message}`);
     }
   }
 
