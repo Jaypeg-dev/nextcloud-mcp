@@ -525,7 +525,7 @@ class NextcloudMCPServer {
       }
       else if (line.startsWith("PRIORITY:"))      task.priority = parseInt(line.substring(9).trim());
       else if (line.startsWith("DESCRIPTION:"))   task.description = line.substring(12).trim();
-      else if (line.startsWith("URL:"))            task.url = line.substring(4).trim();
+      else if (line.startsWith("URL:"))            task.url = line.substring(4).trim().replace(/&amp;/g, '&');
     }
 
     return task.uid ? task : null;
